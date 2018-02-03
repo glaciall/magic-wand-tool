@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Magic Wand Tool</title>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script type="text/javascript" src="http://apps.bdimg.com/libs/jquery/2.1.4/jquery.min.js"></script>
+<script type="text/javascript" src="./js/wand.js"></script>
+<script type="text/javascript">
+    window.onload = function()
+    {
+        WandTool.init(document.getElementById('canvas'));
+        WandTool.loadImage('./img/sky.jpg');
+    }
+</script>
+</body>
+</html>
