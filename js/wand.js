@@ -34,6 +34,7 @@ var WandTool = {
 
             // 用于显示画笔轨迹
             var canvas = document.createElement('CANVAS');
+            canvas.id = '__painter__';
             canvas.style.position = 'absolute';
             canvas.style.zIndex = 10000;
             canvas.style.pointerEvents = 'none';
@@ -44,7 +45,7 @@ var WandTool = {
             document.body.appendChild(canvas);
 
             // 绑定鼠标事件
-            self.__initSampler(canvas.getContext('2d'));
+            self.__initSampler(canvas.getContext('2d'), this.width, this.height);
         }
         img.src = url;
     },
@@ -62,7 +63,7 @@ var WandTool = {
     },
 
     // 事件绑定
-    __initSampler : function(samplerContext)
+    __initSampler : function(samplerContext, imageWidth, imageHeight)
     {
         // 事件绑定
         var self = this;
@@ -74,13 +75,14 @@ var WandTool = {
             {
                 var p = { x : parseInt(e.x - offset.left), y : parseInt(e.y - offset.top) };
                 self.eraser.path.push(p);
-                var color = self.getColor(p.x, p.y);
+                var color = self.getColor(p);
                 color.x = p.x;
                 color.y = p.y;
-                self.eraser.sampleColors['c' + color.hex] = color;
+                self.eraser.sampleColors['c' + color.rgb] = color;
             }
             if (self.eraser.path.length < 2) return;
             var ctx = samplerContext;
+            ctx.beginPath();
             ctx.lineWidth = 4;
             ctx.strokeStyle = '#ffffff';
             ctx.moveTo(self.eraser.path[0].x, self.eraser.path[0].y);
@@ -96,11 +98,17 @@ var WandTool = {
             self.eraser.down = true;
             self.eraser.path = [];
             self.eraser.sampleColors = {};
+            samplerContext.restore();
         });
 
         this.canvas.addEventListener('mouseup', function()
         {
-            if (self.eraser.down) self.pervade();
+            if (self.eraser.down)
+            {
+                self.pervade();
+                self.eraser.path = [];
+                samplerContext.clearRect(0, 0, imageWidth, imageHeight);
+            }
             self.eraser.down = false;
         });
 
@@ -113,7 +121,84 @@ var WandTool = {
     // 相似色渗透
     pervade : function()
     {
-        console.log('xxoo');
+        // 先对采样的颜色进行排序
+        var s = null;
+        var imageWidth = this.bitmap.width;
+        var imageHeight = this.bitmap.height;
+        var colors = [];
+        for (var j in this.eraser.sampleColors)
+        {
+            if (s == null) s = this.eraser.sampleColors[j];
+            colors.push(this.eraser.sampleColors[j]);
+        }
+        colors.sort(function(a, b)
+        {
+            var x = Math.sqrt(Math.pow(255 - a.r, 2) + Math.pow(255 - a.g, 2) + Math.pow(255 - a.b, 2));
+            var y = Math.sqrt(Math.pow(255 - b.r, 2) + Math.pow(255 - b.g, 2) + Math.pow(255 - b.b, 2));
+            return x - y;
+        });
+        console.log('sample colors: ', colors);
+        this.eraser.sampleColors = colors;
+
+        // 从任意一点开始扩张，将相似区域的颜色先全部替换成红色看看
+        var path = [ s ];
+        do
+        {
+            s = path.pop();
+            if (null == s) break;
+            var index = (imageWidth * s.y + s.x) * 4;
+            var red = this.bitmap.data[index];
+            var green = this.bitmap.data[index + 1];
+            var blue = this.bitmap.data[index + 2];
+            var alpha = this.bitmap.data[index + 3];
+            // 是否己经探查过了？使用ALPHA通道进行标记，0xfa表示己经探查过了
+            if (alpha == 0xfa) continue;
+            this.bitmap.data[index + 3] = 0xfa;
+
+            // 如果当前点的颜色不在采样颜色表内，则跳过该点
+            if (this.colorMatches(red, green, blue, 24) > 24) continue;
+            this.bitmap.data[index] = 0xff;
+            this.bitmap.data[index + 1] = 0x00;
+            this.bitmap.data[index + 2] = 0x00;
+
+            // 扩张
+            // TODO: 有些情况下渗透不到位，待查
+            var top = null, left = null, right = null, bottom = null;
+            if (s.x > 0)
+            {
+                var d = { x : s.x - 1, y : s.y };
+                var idx = (imageWidth * d.y + d.x) * 4;
+                if (this.bitmap.data[idx + 3] == 0xff) left = d;
+            }
+            if (s.y > 0)
+            {
+                var d = { x : s.x, y : s.y - 1 };
+                var idx = (imageWidth * d.y + d.x) * 4;
+                if (this.bitmap.data[idx + 3] == 0xff) top = d;
+            }
+            if (s.x < imageWidth)
+            {
+                var d = { x : s.x + 1, y : s.y };
+                var idx = (imageWidth * d.y + d.x) * 4;
+                if (this.bitmap.data[idx + 3] == 0xff) right = d;
+            }
+            if (s.y < imageHeight)
+            {
+                var d = { x : s.x, y : s.y + 1 };
+                var idx = (imageWidth * d.y + d.x) * 4;
+                if (this.bitmap.data[idx + 3] == 0xff) bottom = d;
+            }
+
+            // 记录路径
+            if (left) path.push(left);
+            if (top) path.push(top);
+            if (right) path.push(right);
+            if (bottom) path.push(bottom);
+        }
+        while (path.length > 0);
+
+        // 输出显示一下看看
+        this.context.putImageData(this.bitmap, 0, 0);
     },
 
     /**
@@ -124,19 +209,19 @@ var WandTool = {
      * @param min 最小相似度阈值
      * @returns {*}
      */
-    colorMatchers : function(r, g, b, min)
+    colorMatches : function(r, g, b, min)
     {
         var start = 0;
-        var end = self.eraser.sampleColors.length;
+        var end = this.eraser.sampleColors.length;
         var mid = 0;
-        for (var i = 0; i < self.eraser.sampleColors.length; i++)
+        for (var i = 0; i < this.eraser.sampleColors.length; i++)
         {
             var mid = parseInt(start + (end - start) / 2);
             var left = parseInt(start + (mid - start) / 2);
             var right = parseInt(mid + (end - mid) / 2);
 
-            var ldiff = self.colorDiff(r, g, b, self.eraser.sampleColors[left].r, self.eraser.sampleColors[left].g, self.eraser.sampleColors[left].b);
-            var rdiff = self.colorDiff(r, g, b, self.eraser.sampleColors[right].r, self.eraser.sampleColors[right].g, self.eraser.sampleColors[right].b);
+            var ldiff = this.colorDiff(r, g, b, this.eraser.sampleColors[left].r, this.eraser.sampleColors[left].g, this.eraser.sampleColors[left].b);
+            var rdiff = this.colorDiff(r, g, b, this.eraser.sampleColors[right].r, this.eraser.sampleColors[right].g, this.eraser.sampleColors[right].b);
             if (ldiff < min) return ldiff;
             if (rdiff < min) return rdiff;
             if (ldiff < rdiff)
@@ -166,11 +251,16 @@ var WandTool = {
     {
         if (p == null) return null;
         var index = (p.y * this.bitmap.width + p.x) * 4;
+        var red = this.bitmap.data[index];
+        var green = this.bitmap.data[index + 1];
+        var blue = this.bitmap.data[index + 2];
+        var alpha = this.bitmap.data[index + 3]
         return {
-            r: this.bitmap.data[index],
-            g: this.bitmap.data[index + 1],
-            b: this.bitmap.data[index + 2],
-            a: this.bitmap.data[index + 3]
+            r: red,
+            g: green,
+            b: blue,
+            a: alpha,
+            rgb : (red << 16) | (green << 8) | blue
         };
     },
 
